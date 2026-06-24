@@ -18,6 +18,7 @@ _RERANKER_MODEL_FILE = "flashrank-TinyBERT-L-2-v2.onnx"
 _RERANKER_CACHE_DIR = Path(
     os.environ.get("FLASHRANK_CACHE_DIR", "~/.cache/flashrank")
 ).expanduser()
+INTERNAL_METADATA_KEYS = {"filepath", "file_size", "file_mtime_ns", "source_metadata_hash"}
 
 
 def _get_reranker():
@@ -219,7 +220,7 @@ def main():
         keys = {}
         for meta in data["metadatas"]:
             for k, v in meta.items():
-                if k == "filepath":
+                if k in INTERNAL_METADATA_KEYS:
                     continue
                 keys.setdefault(k, {})
                 keys[k][str(v)] = keys[k].get(str(v), 0) + 1

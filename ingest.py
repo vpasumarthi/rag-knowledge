@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -16,6 +17,13 @@ from tqdm import tqdm
 from embedding import get_embedding_function
 
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+BATCH_SIZE = 64  # chunks per upsert/update batch
+
+FILEPATH_KEY = "filepath"
+FILE_SIZE_KEY = "file_size"
+FILE_MTIME_NS_KEY = "file_mtime_ns"
+SOURCE_METADATA_HASH_KEY = "source_metadata_hash"
+FILE_SIGNATURE_KEYS = (FILE_SIZE_KEY, FILE_MTIME_NS_KEY, SOURCE_METADATA_HASH_KEY)
 
 
 def load_config(config_path: str = None) -> dict:
@@ -35,6 +43,23 @@ def stable_id(collection_name: str, filepath: str, chunk_idx: int) -> str:
     """Deterministic ID from collection + filepath + chunk index."""
     key = f"{collection_name}:{filepath}:{chunk_idx}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def source_metadata_hash(metadata: dict) -> str:
+    """Stable hash of configured source metadata for incremental invalidation."""
+    payload = json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def file_signature(filepath: str, source_metadata: dict) -> dict:
+    """Return metadata fields that identify the current file contents/config."""
+    st = os.stat(filepath)
+    return {
+        FILEPATH_KEY: filepath,
+        FILE_SIZE_KEY: st.st_size,
+        FILE_MTIME_NS_KEY: st.st_mtime_ns,
+        SOURCE_METADATA_HASH_KEY: source_metadata_hash(source_metadata),
+    }
 
 
 # --- Reference section detection ---
@@ -275,14 +300,90 @@ def resolve_files(source: dict) -> list[str]:
 
 # --- Ingestion ---
 
-BATCH_SIZE = 64  # chunks per upsert batch
+def _metadata_values_equal(left, right) -> bool:
+    """Compare Chroma metadata values while tolerating int/string round-trips."""
+    return left == right or (left is not None and right is not None and str(left) == str(right))
+
+
+def existing_file_manifest(collection) -> dict:
+    """Build a filepath -> existing chunk metadata map from Chroma."""
+    count = collection.count()
+    if count == 0:
+        return {}
+
+    print(f"  Reading existing metadata from {count} chunks...")
+    data = collection.get(include=["metadatas"])
+    manifest = {}
+
+    for cid, meta in zip(data.get("ids", []), data.get("metadatas", [])):
+        if not meta:
+            continue
+        filepath = meta.get(FILEPATH_KEY)
+        if not filepath:
+            continue
+
+        entry = manifest.setdefault(filepath, {
+            "ids": [],
+            "metadatas": [],
+            "chunk_count": 0,
+            "sample_metadata": meta,
+            "inconsistent_signature": False,
+        })
+        entry["ids"].append(cid)
+        entry["metadatas"].append(meta)
+        entry["chunk_count"] += 1
+
+        for key in FILE_SIGNATURE_KEYS:
+            value = meta.get(key)
+            if key not in entry:
+                entry[key] = value
+            elif not _metadata_values_equal(entry[key], value):
+                entry["inconsistent_signature"] = True
+
+    return manifest
+
+
+def manifest_matches_signature(entry: dict, signature: dict) -> bool:
+    """True when existing chunks match the current file signature."""
+    if entry.get("inconsistent_signature"):
+        return False
+    return all(
+        entry.get(key) is not None and _metadata_values_equal(entry.get(key), signature[key])
+        for key in FILE_SIGNATURE_KEYS
+    )
+
+
+def legacy_manifest_can_be_backfilled(entry: dict, source_metadata: dict) -> bool:
+    """True for pre-incremental chunks whose source metadata still matches config."""
+    if any(entry.get(key) is not None for key in FILE_SIGNATURE_KEYS):
+        return False
+
+    sample = entry.get("sample_metadata") or {}
+    return all(_metadata_values_equal(sample.get(k), v) for k, v in source_metadata.items())
+
+
+def backfill_file_metadata(collection, manifest: dict, backfill_items: list[tuple[str, dict]]) -> int:
+    """Add file signature fields to legacy chunks without re-embedding them."""
+    updated_chunks = 0
+    for filepath, signature in tqdm(backfill_items, desc="  backfill metadata", unit="file"):
+        entry = manifest[filepath]
+        ids = entry["ids"]
+        metadatas = [{**meta, **signature} for meta in entry["metadatas"]]
+        for i in range(0, len(ids), BATCH_SIZE):
+            batch_end = min(i + BATCH_SIZE, len(ids))
+            collection.update(
+                ids=ids[i:batch_end],
+                metadatas=metadatas[i:batch_end],
+            )
+            updated_chunks += batch_end - i
+    return updated_chunks
 
 
 def _process_file(args: tuple) -> dict:
     """Process a single file into chunks + metadata. Runs in worker processes."""
-    filepath, base_metadata, collection_name = args
+    filepath, base_metadata, collection_name, signature = args
     ext = os.path.splitext(filepath)[1].lower()
-    file_meta = {**base_metadata, "filepath": filepath}
+    file_meta = {**base_metadata, **signature}
     result = {"filepath": filepath, "ids": [], "documents": [], "metadatas": [],
               "error": None, "skipped": False}
 
@@ -341,8 +442,9 @@ def _process_file(args: tuple) -> dict:
 
 def ingest_collection(client: chromadb.PersistentClient, name: str,
                       col_config: dict, force: bool = False,
+                      prune: bool = False,
                       workers: int = 4) -> dict:
-    """Ingest all sources into a collection with parallel extraction and batched upserts."""
+    """Incrementally ingest sources into a collection."""
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     ef = get_embedding_function()
@@ -360,40 +462,139 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
         embedding_function=ef,
     )
 
-    stats = {"files": 0, "chunks": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "discovered": 0,
+        "processed": 0,
+        "new": 0,
+        "updated": 0,
+        "chunks": 0,
+        "unchanged": 0,
+        "backfilled_files": 0,
+        "backfilled_chunks": 0,
+        "unsupported": 0,
+        "errors": 0,
+        "pruned_files": 0,
+        "pruned_chunks": 0,
+    }
 
     # Gather all files across sources with their metadata
     all_files = []
+    discovered_paths = set()
+    missing_sources = []
     for source in col_config.get("sources", []):
         base_metadata = source.get("metadata", {})
+        source_path = os.path.expanduser(source["path"])
+        if not os.path.exists(source_path):
+            missing_sources.append(source_path)
         files = resolve_files(source)
-        print(f"  Source: {os.path.expanduser(source['path'])} -> {len(files)} files")
+        print(f"  Source: {source_path} -> {len(files)} files")
         for f in files:
-            all_files.append((f, base_metadata, name))
+            try:
+                signature = file_signature(f, base_metadata)
+            except OSError as e:
+                print(f"  WARN: Failed to stat {f}: {e}")
+                stats["errors"] += 1
+                continue
+            all_files.append((f, base_metadata, name, signature))
+            discovered_paths.add(f)
+
+    stats["discovered"] = len(all_files)
+    existing_manifest = {} if force else existing_file_manifest(collection)
+
+    # Plan the incremental work before starting expensive PDF extraction/embedding.
+    files_to_process = []
+    backfill_items = []
+    for args in all_files:
+        filepath, base_metadata, _, signature = args
+        existing = existing_manifest.get(filepath)
+        if existing and manifest_matches_signature(existing, signature):
+            stats["unchanged"] += 1
+            continue
+        if existing and legacy_manifest_can_be_backfilled(existing, base_metadata):
+            stats["unchanged"] += 1
+            stats["backfilled_files"] += 1
+            backfill_items.append((filepath, signature))
+            continue
+        files_to_process.append(args)
+
+    print(f"  Incremental plan: {len(files_to_process)} to process, "
+          f"{stats['unchanged']} unchanged")
+
+    if backfill_items:
+        stats["backfilled_chunks"] = backfill_file_metadata(
+            collection, existing_manifest, backfill_items
+        )
+
+    if prune and missing_sources:
+        print("  WARN: Skipping prune because configured source paths are missing:")
+        for path in missing_sources:
+            print(f"        {path}")
+    elif prune:
+        stale_paths = sorted(set(existing_manifest) - discovered_paths)
+        if stale_paths:
+            print(f"  Pruning {len(stale_paths)} stale files...")
+        for filepath in tqdm(stale_paths, desc=f"  {name} prune", unit="file"):
+            stats["pruned_files"] += 1
+            stats["pruned_chunks"] += existing_manifest[filepath]["chunk_count"]
+            collection.delete(where={FILEPATH_KEY: filepath})
 
     # Phase 1: Parallel file extraction (CPU + I/O bound)
-    print(f"  Extracting text from {len(all_files)} files ({workers} workers)...")
+    print(f"  Extracting text from {len(files_to_process)} files ({workers} workers)...")
     pending_ids = []
     pending_docs = []
     pending_metas = []
+    replace_paths = set()
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_process_file, args): args[0] for args in all_files}
-        for future in tqdm(as_completed(futures), total=len(futures),
-                           desc=f"  {name} extract", unit="file"):
-            result = future.result()
+    if files_to_process and workers <= 1:
+        for args in tqdm(files_to_process, desc=f"  {name} extract", unit="file"):
+            result = _process_file(args)
+            filepath = result["filepath"]
             if result["skipped"]:
-                stats["skipped"] += 1
+                stats["unsupported"] += 1
             elif result["error"]:
                 stats["errors"] += 1
+                print(f"  WARN: Failed to process {filepath}: {result['error']}")
             elif result["ids"]:
                 pending_ids.extend(result["ids"])
                 pending_docs.extend(result["documents"])
                 pending_metas.extend(result["metadatas"])
-                stats["files"] += 1
+                stats["processed"] += 1
+                if filepath in existing_manifest:
+                    stats["updated"] += 1
+                    replace_paths.add(filepath)
+                else:
+                    stats["new"] += 1
+    elif files_to_process:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_process_file, args): args[0] for args in files_to_process}
+            for future in tqdm(as_completed(futures), total=len(futures),
+                               desc=f"  {name} extract", unit="file"):
+                result = future.result()
+                filepath = result["filepath"]
+                if result["skipped"]:
+                    stats["unsupported"] += 1
+                elif result["error"]:
+                    stats["errors"] += 1
+                    print(f"  WARN: Failed to process {filepath}: {result['error']}")
+                elif result["ids"]:
+                    pending_ids.extend(result["ids"])
+                    pending_docs.extend(result["documents"])
+                    pending_metas.extend(result["metadatas"])
+                    stats["processed"] += 1
+                    if filepath in existing_manifest:
+                        stats["updated"] += 1
+                        replace_paths.add(filepath)
+                    else:
+                        stats["new"] += 1
 
     # Phase 2: Pre-compute embeddings with fastembed (large batch, much faster)
     total_chunks = len(pending_ids)
+    if total_chunks == 0:
+        print(f"  Collection '{name}': {stats['processed']} files processed, "
+              f"0 chunks upserted ({stats['unchanged']} unchanged, "
+              f"{stats['pruned_files']} pruned, {stats['errors']} errors)")
+        return stats
+
     print(f"  Embedding {total_chunks} chunks with fastembed...")
     from fastembed import TextEmbedding
     from embedding import MODEL_NAME
@@ -403,6 +604,11 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
         total=total_chunks, desc=f"  {name} embed", unit="chunk"
     ))
     all_embeddings = [e.tolist() for e in all_embeddings]
+
+    if replace_paths:
+        print(f"  Removing old chunks for {len(replace_paths)} changed files...")
+        for filepath in tqdm(sorted(replace_paths), desc=f"  {name} replace", unit="file"):
+            collection.delete(where={FILEPATH_KEY: filepath})
 
     # Phase 3: Upsert with pre-computed embeddings (no re-embedding by ChromaDB)
     print(f"  Upserting {total_chunks} chunks in batches of {BATCH_SIZE}...")
@@ -417,8 +623,11 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
         )
         stats["chunks"] += batch_end - i
 
-    print(f"  Collection '{name}': {stats['files']} files, {stats['chunks']} chunks "
-          f"({stats['skipped']} skipped, {stats['errors']} errors)")
+    print(f"  Collection '{name}': {stats['processed']} files processed "
+          f"({stats['new']} new, {stats['updated']} updated), "
+          f"{stats['chunks']} chunks upserted, {stats['unchanged']} unchanged, "
+          f"{stats['pruned_files']} pruned, {stats['unsupported']} unsupported, "
+          f"{stats['errors']} errors")
     return stats
 
 
@@ -429,6 +638,10 @@ def main():
     parser.add_argument("--config", default=None, help="Path to config.yaml")
     parser.add_argument("--force", action="store_true",
                         help="Force re-index (deletes and rebuilds collections)")
+    parser.add_argument("--prune", action="store_true",
+                        help="Remove chunks for files no longer found in configured sources")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Parallel extraction workers (use 1 for serial ingest)")
     parser.add_argument("--list", action="store_true", help="List collections and exit")
     args = parser.parse_args()
 
@@ -453,7 +666,9 @@ def main():
             print(f"Unknown collection: {name}")
             continue
         print(f"\nIngesting '{name}'...")
-        ingest_collection(client, name, cfg["collections"][name], force=args.force)
+        ingest_collection(client, name, cfg["collections"][name],
+                          force=args.force, prune=args.prune,
+                          workers=max(1, args.workers))
 
     print("\nDone.")
 

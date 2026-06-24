@@ -209,12 +209,22 @@ If you've added new papers to Zotero or updated manuscript files:
 conda activate rag
 cd ~/rag-knowledge
 
-# Re-index a specific collection (incremental — upserts, doesn't duplicate)
+# Incremental ingest: skips unchanged files, adds new files, refreshes changed files
 python ingest.py active-research
+
+# Also remove chunks for files that disappeared from configured sources
+python ingest.py literature --prune
 
 # Force full rebuild (deletes and re-creates — use after changing config)
 python ingest.py literature --force
 ```
+
+Normal ingest compares each discovered filepath against stored file metadata
+(`file_size`, `file_mtime_ns`, and source metadata hash). Unchanged files are
+not re-extracted or re-embedded. The first run after upgrading from older
+indexes backfills this metadata onto existing chunks when source metadata still
+matches, so a Zotero add-only update does not require rebuilding the full
+literature collection.
 
 ### Via Python
 
@@ -292,3 +302,5 @@ conda activate rag   # Python 3.12, all dependencies pre-installed
    ```bash
    python ingest.py literature
    ```
+   Use `--prune` only when you also want to remove chunks for PDFs that were
+   deleted or moved out of the configured Zotero/EndNote sources.

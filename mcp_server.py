@@ -27,6 +27,7 @@ Results are reranked by a cross-encoder for relevance quality.
 cfg = load_config()
 client = get_client(cfg)
 ef = get_embedding_function()
+INTERNAL_METADATA_KEYS = {"filepath", "file_size", "file_mtime_ns", "source_metadata_hash"}
 
 
 @mcp.tool()
@@ -165,7 +166,7 @@ def collection_stats(collection: str) -> str:
     keys = {}
     for meta in data["metadatas"]:
         for k, v in meta.items():
-            if k == "filepath":
+            if k in INTERNAL_METADATA_KEYS:
                 continue
             keys.setdefault(k, {})
             keys[k][str(v)] = keys[k].get(str(v), 0) + 1
