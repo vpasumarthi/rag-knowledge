@@ -48,8 +48,14 @@ cd ~/rag-knowledge
 python query.py search my-work "free energy barriers"
 python query.py search literature "MLIP transition states" --era postdoc
 
-# Re-index after adding new papers
+# Preview new/changed PDFs before updating
+python ingest.py literature --dry-run --show-files
+
+# Incrementally add new PDFs and refresh changed PDFs
 python ingest.py literature
+
+# Also remove chunks for PDFs no longer in configured source folders
+python ingest.py literature --prune
 ```
 
 In Claude Code, the MCP server is registered globally — just ask naturally and the `search_knowledge` tool is invoked automatically.
