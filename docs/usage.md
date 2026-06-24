@@ -212,11 +212,17 @@ cd ~/rag-knowledge
 # Preview what would be added or refreshed
 python ingest.py active-research --dry-run
 
+# Preview and list the file paths
+python ingest.py literature --dry-run --show-files
+
 # Incremental ingest: skips unchanged files, adds new files, refreshes changed files
 python ingest.py active-research
 
 # Preview add/update work plus stale files that would be pruned
 python ingest.py literature --prune --dry-run
+
+# Preview prune and list stale file paths
+python ingest.py literature --prune --dry-run --show-files
 
 # Also remove chunks for files that disappeared from configured sources
 python ingest.py literature --prune

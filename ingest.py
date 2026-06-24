@@ -386,8 +386,18 @@ def backfill_file_metadata(collection, manifest: dict, backfill_items: list[tupl
     return updated_chunks
 
 
+def print_file_list(label: str, paths: list[str]) -> None:
+    """Print a sorted path list for dry-run details."""
+    if not paths:
+        return
+    print(f"  {label}:")
+    for path in sorted(paths):
+        print(f"    {path}")
+
+
 def print_dry_run_summary(name: str, stats: dict, prune: bool,
-                          force: bool, missing_sources: list[str]) -> None:
+                          force: bool, missing_sources: list[str],
+                          show_files: bool = False) -> None:
     """Print a read-only ingest plan."""
     print(f"  Dry run for '{name}': no changes written")
     print(f"  Existing indexed files: {stats['existing_files']}")
@@ -416,6 +426,11 @@ def print_dry_run_summary(name: str, stats: dict, prune: bool,
               f"{stats['stale_chunks']} chunks")
     elif stats["stale_files"]:
         print("  Stale files would be kept. Add --prune to remove them.")
+
+    if show_files:
+        print_file_list("New file paths", stats["planned_new_files"])
+        print_file_list("Changed file paths", stats["planned_updated_files"])
+        print_file_list("Stale file paths", stats["stale_filepaths"])
 
 
 def _process_file(args: tuple) -> dict:
@@ -482,6 +497,7 @@ def _process_file(args: tuple) -> dict:
 def ingest_collection(client: chromadb.PersistentClient, name: str,
                       col_config: dict, force: bool = False,
                       prune: bool = False, dry_run: bool = False,
+                      show_files: bool = False,
                       workers: int = 4) -> dict:
     """Incrementally ingest sources into a collection."""
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -521,6 +537,8 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
         "existing_files": len(existing_manifest),
         "planned_new": 0,
         "planned_updated": 0,
+        "planned_new_files": [],
+        "planned_updated_files": [],
         "processed": 0,
         "new": 0,
         "updated": 0,
@@ -534,6 +552,7 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
         "pruned_chunks": 0,
         "stale_files": 0,
         "stale_chunks": 0,
+        "stale_filepaths": [],
     }
 
     # Gather all files across sources with their metadata
@@ -576,13 +595,16 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
             continue
         if existing:
             stats["planned_updated"] += 1
+            stats["planned_updated_files"].append(filepath)
         else:
             stats["planned_new"] += 1
+            stats["planned_new_files"].append(filepath)
         files_to_process.append(args)
 
     stale_paths = [] if force else sorted(set(existing_manifest) - discovered_paths)
     stats["stale_files"] = len(stale_paths)
     stats["stale_chunks"] = sum(existing_manifest[p]["chunk_count"] for p in stale_paths)
+    stats["stale_filepaths"] = stale_paths
     if backfill_items:
         stats["backfilled_chunks"] = sum(
             existing_manifest[filepath]["chunk_count"]
@@ -594,7 +616,8 @@ def ingest_collection(client: chromadb.PersistentClient, name: str,
           f"{stats['unchanged']} unchanged")
 
     if dry_run:
-        print_dry_run_summary(name, stats, prune, force, missing_sources)
+        print_dry_run_summary(name, stats, prune, force, missing_sources,
+                              show_files=show_files)
         return stats
 
     if backfill_items:
@@ -718,10 +741,15 @@ def main():
                         help="Remove chunks for files no longer found in configured sources")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show planned ingest/prune changes without writing anything")
+    parser.add_argument("--show-files", action="store_true",
+                        help="List planned file paths in --dry-run output")
     parser.add_argument("--workers", type=int, default=4,
                         help="Parallel extraction workers (use 1 for serial ingest)")
     parser.add_argument("--list", action="store_true", help="List collections and exit")
     args = parser.parse_args()
+
+    if args.show_files and not args.dry_run:
+        parser.error("--show-files is only supported with --dry-run")
 
     cfg = load_config(args.config)
     client = get_client(cfg)
@@ -746,6 +774,7 @@ def main():
         print(f"\nIngesting '{name}'...")
         ingest_collection(client, name, cfg["collections"][name],
                           force=args.force, prune=args.prune, dry_run=args.dry_run,
+                          show_files=args.show_files,
                           workers=max(1, args.workers))
 
     print("\nDone.")
