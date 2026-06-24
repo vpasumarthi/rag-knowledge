@@ -209,8 +209,14 @@ If you've added new papers to Zotero or updated manuscript files:
 conda activate rag
 cd ~/rag-knowledge
 
+# Preview what would be added or refreshed
+python ingest.py active-research --dry-run
+
 # Incremental ingest: skips unchanged files, adds new files, refreshes changed files
 python ingest.py active-research
+
+# Preview add/update work plus stale files that would be pruned
+python ingest.py literature --prune --dry-run
 
 # Also remove chunks for files that disappeared from configured sources
 python ingest.py literature --prune
