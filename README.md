@@ -31,7 +31,7 @@ Keeping them separate trades one extra routing decision for a much cleaner resul
 Daily, in three places:
 
 - **Writing manuscripts** — grounded recall of methods/results from prior papers without re-reading PDFs.
-- **Drafting cover letters and applications** — citing my own work accurately, with chunk-level references rather than recollection.
+- **Citing prior work accurately**: pulling exact claims and numbers from my own published papers, with chunk-level references rather than recollection.
 - **Reviewing literature** — semantic search across a 700-paper corpus that's otherwise effectively unindexed.
 
 The MCP integration is the highest-leverage piece: Claude can pull grounded text from the corpus mid-conversation rather than hallucinating citations.
@@ -43,6 +43,9 @@ See `docs/usage.md` for the full guide. Short version:
 ```bash
 conda activate rag
 cd ~/rag-knowledge
+
+# First run only: create your local config from the example
+cp config.example.yaml config.yaml   # then edit the source paths
 
 # Search
 python query.py search my-work "free energy barriers"
@@ -68,7 +71,8 @@ rag-knowledge/
   query.py         search/list/stats/delete CLI + Python API
   embedding.py     embedding function setup
   mcp_server.py    MCP server for Claude integration
-  config.yaml      collection definitions, source paths, metadata tags
+  config.example.yaml  template: collection definitions, source paths, metadata tags
+                       (copy to config.yaml, which is gitignored)
   docs/usage.md    complete usage guide
 ```
 

@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .claude/
+
+# Local configuration: personal source paths. Copy config.example.yaml to start.
+config.yaml

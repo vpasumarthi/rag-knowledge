@@ -1,0 +1,52 @@
+# RAG Knowledge Base Configuration (example)
+#
+# Copy to config.yaml and edit the paths for your own setup:
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is gitignored, so your personal source paths stay local.
+
+chroma_path: ~/.local/share/rag-knowledge/chroma
+
+collections:
+  # Your own output: published papers, CV, profile. Kept separate so questions
+  # about your prior work are not diluted by the surrounding literature.
+  my-work:
+    description: "Published work, profile, CV, resume"
+    sources:
+      - path: ~/path/to/profile.md
+        metadata: {type: profile}
+      - path: ~/path/to/cv
+        metadata: {type: cv}
+        glob: "*.tex"
+      - path: ~/path/to/publications
+        metadata: {type: published-paper}
+        glob: "*/Main Text.pdf"
+      - path: ~/path/to/publications
+        metadata: {type: supporting-info}
+        glob: "*/SI.pdf"
+
+  # Work in progress. The `project` tag enables --project filtering; `stage`
+  # is free-form and useful for scoping queries to what is nearly done.
+  active-research:
+    description: "Manuscript drafts, analysis notes, research data"
+    sources:
+      - path: ~/path/to/manuscripts/project-a
+        metadata: {project: "project-a", era: postdoc, stage: draft}
+        glob: "**/*.{tex,md}"
+        exclude: ["CLAUDE.md", "AGENTS.md", ".git/**"]
+      - path: ~/path/to/manuscripts/project-b
+        metadata: {project: "project-b", era: phd, stage: early}
+        glob: "**/*.{tex,md}"
+        exclude: ["CLAUDE.md", "AGENTS.md", ".git/**"]
+
+  # Reference corpus. Typically the largest collection by an order of
+  # magnitude, which is the main reason it is not merged with the others.
+  literature:
+    description: "Academic literature"
+    sources:
+      - path: ~/Zotero/storage
+        metadata: {source: zotero, era: postdoc}
+        glob: "**/*.pdf"
+      - path: ~/path/to/other/pdf/library
+        metadata: {source: endnote-phd, era: phd}
+        glob: "**/*.pdf"

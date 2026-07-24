@@ -40,7 +40,7 @@ You can also be explicit about which collection to search:
 
 ```
 "Search my-work for CatEnergy tool"
-"Search active-research for NEB calculations in project project-a"
+"Search active-research for NEB calculations in project-a"
 "Search literature for constant potential DFT methods"
 ```
 
@@ -287,7 +287,9 @@ Every result has two relevance measures:
 
 ### Config file
 
-`~/rag-knowledge/config.yaml` — defines collections, source paths, and metadata tags. Edit this to add new sources or change metadata.
+`~/rag-knowledge/config.yaml` defines collections, source paths, and metadata tags. Edit this to add new sources or change metadata.
+
+It is gitignored, since source paths are personal to each setup. On a fresh clone, create it with `cp config.example.yaml config.yaml` and edit the paths.
 
 ### Data location
 
