@@ -4,6 +4,8 @@
 
 A local retrieval-augmented knowledge base over the author's research corpus — published work, manuscript drafts, and the literature accumulated through PhD and three postdoc appointments.
 
+For a concise architecture and implementation summary, see the [technical overview](docs/technical-overview.md) ([PDF](docs/rag-knowledge-technical-overview.pdf)).
+
 ## What's in it
 
 Three ChromaDB collections, separated by purpose:
