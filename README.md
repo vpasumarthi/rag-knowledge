@@ -10,9 +10,9 @@ Three ChromaDB collections, separated by purpose:
 
 | Collection | Contents | ~Chunks |
 |---|---|---|
-| `my-work` | Published papers, profile, CV, resume | 957 |
-| `active-research` | Manuscript drafts, analysis notes, project data | 727 |
-| `literature` | ~700 PDFs from Zotero + EndNote (PhD → postdoc) | 83,861 |
+| `my-work` | Published papers, profile, CV, resume | 1,037 |
+| `active-research` | Manuscript drafts, analysis notes, project data | 1,132 |
+| `literature` | ~700 PDFs from Zotero + EndNote (PhD → postdoc) | 84,548 |
 
 Embedding search via ChromaDB, with a cross-encoder reranker on top for relevance quality. Exposed as a Claude MCP server (`mcp_server.py`) so Claude Code can retrieve directly during conversation, plus a CLI (`query.py`) for terminal use and a Python API for scripts/notebooks.
 

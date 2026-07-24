@@ -101,9 +101,9 @@ python query.py list
 
 Output:
 ```
-  my-work: Published work, profile, CV, resume (957 chunks)
-  active-research: Manuscript drafts, analysis notes, research data (727 chunks)
-  literature: Academic literature from PhD through postdocs (83861 chunks)
+  my-work: Published work, profile, CV, resume (1037 chunks)
+  active-research: Manuscript drafts, analysis notes, research data (1132 chunks)
+  literature: Academic literature from PhD through postdocs (84548 chunks)
 ```
 
 ### Collection stats (metadata breakdown)
