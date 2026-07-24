@@ -13,7 +13,7 @@ Your knowledge base has 3 collections:
 
 | Collection | What's in it | Use when |
 |---|---|---|
-| `my-work` | Profile, CV, resumes, 8 published papers + SI | Writing applications, cover letters, checking your own publication details |
+| `my-work` | Profile, CV, resumes, 8 published papers + SI | Citing your own prior results accurately, checking publication details |
 | `active-research` | 5 manuscript repos (drafts, notes, data) | Working on manuscripts, cross-referencing across projects |
 | `literature` | 697 PDFs from Zotero + EndNote (PhD through postdocs) | Finding papers you've read, checking what the literature says about a topic |
 
